@@ -462,11 +462,13 @@ download_files <- function(
     # while generateDownloadDone not ready
     is_ready = FALSE
     while (!is_ready) {
-      response      <- httr::GET(paste0('https://www.epicov.org/epi3/check_async/', check_async_id, '?_=', timestamp()))
+      base_url= paste0("https://www.epicov.org/epi3/check_async/", check_async_id)
+      parameter_string <- paste0("_=", timestamp())
+      response <- send_request(method="GET", base_url=base_url, parameter_string=parameter_string)
       response_data <- parseResponse(response)
-      is_ready      <- response_data$is_ready
-      if (!is_ready) { Sys.sleep(1) }
+      is_ready <- response_data$is_ready
     }
+    log.debug(sprintf("check_async (response_data): %s", display_list(response_data)))
 
     # ---------------------------------------------------------------------------
     # Get Download URL

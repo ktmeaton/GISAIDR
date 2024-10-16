@@ -14,22 +14,19 @@ login <- function(username, password, database="EpiCoV") {
     stop(log.error(paste("Database must be EpiCoV, EpiRSV or EpiPox:", database)))
   }
   # get a session ID
-  response <- send_request()
-  home_page_text = httr::content(response, as = 'text')
-  session_id <-
-    extract_first_match("name=\"sid\" value='([^']*)", home_page_text)
-  response <- send_request(paste0('sid=', session_id))
+  response       <- send_request(method="GET")
+  home_page_text <- httr::content(response, as = 'text')
+  session_id     <- extract_first_match("name=\"sid\" value='([^']*)", home_page_text)
 
   # Load the home page
   # TODO: ensure it's the covid-19 page
-  login_page_text = httr::content(response, as = 'text')
+  response        <- send_request(method="GET", parameter_string=paste0('sid=', session_id))
+  login_page_text <- httr::content(response, as = 'text')
 
-  # extract the other IDs for log in stage 1
-  WID <- extract_first_match('"WID"] = "([^"]*)', login_page_text)
-  login_page_ID <-
-    extract_first_match('PID"] = "([^"]*)', login_page_text)
-  login_component_ID <-
-    extract_first_match("sys.getC\\('(.*)').call\\('doLogin'", login_page_text)
+  # extract the other IDs for login stage 1
+  WID                <- extract_first_match('"WID"] = "([^"]*)', login_page_text)
+  login_page_ID      <- extract_first_match('PID"] = "([^"]*)', login_page_text)
+  login_component_ID <- extract_first_match("sys.getC\\('(.*)').call\\('doLogin'", login_page_text)
 
   # frontend page
   # create doLogin command
@@ -43,19 +40,18 @@ login <- function(username, password, database="EpiCoV") {
 
   # add the doLogin command to queue
   # commands can be built up into a pipeline in the queue
-  queue <- list(queue = list(doLogin_command))
-  data <-
-    formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
-
-  response <- send_request(method = 'POST', data=data)
+  queue         <- list(queue = list(doLogin_command))
+  data          <- formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
+  response      <- send_request(method = 'POST', data=data)
   response_data <- parseResponse(response)
+  log.debug(paste("login_doLogin (response_data):", display_list(response_data)))
 
   if (length(grep("^sys.goPage", response_data$responses[[1]]$data)) == 0) {
     # handle event that the default page is not frontend
-    default_page <- send_request(paste0('sid=', session_id))
-    default_page_text = httr::content(default_page, as = 'text')
-
-    EpiCov_CID <- extract_first_match("sys.call\\('(.{5,20})','Go'", default_page_text)
+    parameter_string  <- paste0('sid=', session_id)
+    default_page      <- send_request(parameter_string=parameter_string)
+    default_page_text <- httr::content(default_page, as = 'text')
+    EpiCov_CID        <- extract_first_match("sys.call\\('(.{5,20})','Go'", default_page_text)
 
     goto_EpiCov_page_command <- createCommand(
       wid = WID,
@@ -65,26 +61,25 @@ login <- function(username, password, database="EpiCoV") {
       params = list(page = 'corona2020')
     )
 
-    queue <- list(queue = list(goto_EpiCov_page_command))
-
-    data <-
-      formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
-
-    response <- send_request(data)
+    queue         <- list(queue = list(goto_EpiCov_page_command))
+    data          <- formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
+    response      <- send_request(method="GET", data)
     response_data <- parseResponse(response)
+    log.debug(paste0("login_frontend (response_data):", display_list(response_data)))
   }
 
-  frontend_page_ID <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
+  frontend_page_ID   <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
+  frontend_page      <- send_request(paste0('sid=', session_id, '&pid=', frontend_page_ID))
+  frontend_page_text <- httr::content(frontend_page, as = 'text')
 
-  frontend_page <- send_request(paste0('sid=', session_id, '&pid=', frontend_page_ID))
-  frontend_page_text = httr::content(frontend_page, as = 'text')
   if (grepl('sys.openOverlay', frontend_page_text, fixed = TRUE)) {
     # extract overlay pid
     overlay_window_ID <- paste0('wid_', extract_first_match("openOverlay\\('wid_(.{5,20})','pid_.{5,20}'", frontend_page_text))
-    overlay_page_ID <- paste0('pid_', extract_first_match("openOverlay\\('wid_.{5,20}','pid_(.{5,20})'", frontend_page_text))
+    overlay_page_ID   <- paste0('pid_', extract_first_match("openOverlay\\('wid_.{5,20}','pid_(.{5,20})'", frontend_page_text))
 
     # load overlay
-    overlay_page <- send_request(paste0('sid=', session_id, '&pid=', overlay_page_ID))
+    parameter_string  <- paste0('sid=', session_id, '&pid=', overlay_page_ID)
+    overlay_page      <- send_request(method="GET", parameter_string=parameter_string)
     overlay_page_text <- httr::content(overlay_page, as = 'text')
 
     # extract close cid
@@ -98,10 +93,11 @@ login <- function(username, password, database="EpiCoV") {
       cmd = 'Back'
     )
     queue <- list(queue = list(close_overlay_command))
-    data <-
-      formatDataForRequest(session_id, overlay_window_ID, overlay_page_ID, queue, timestamp())
-    response <- send_request(data)
+  
+    data          <- formatDataForRequest(session_id, overlay_window_ID, overlay_page_ID, queue, timestamp())
+    response      <- send_request(data)
     response_data <- parseResponse(response)
+    log.debug(paste("login_openOverlay (response_data):", display_list(response_data)))
   }
 
   if (database=="EpiRSV") {
@@ -115,25 +111,21 @@ login <- function(username, password, database="EpiCoV") {
       params = list(page = 'rsv')
     )
 
-    queue <- list(queue = list(goto_EpiRSV_page_command))
-
-    data <-
-      formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
-
-    response <- send_request(data)
+    queue         <- list(queue = list(goto_EpiRSV_page_command))
+    data          <- formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
+    response      <- send_request(data)
     response_data <- parseResponse(response)
-    RSV_page_ID <-
-      extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
-    RSV_page <- send_request(paste0('sid=', session_id, '&pid=', RSV_page_ID))
-    RSV_page_text = httr::content(RSV_page, as = 'text')
+    log.debug(paste("login_EpiRSV (response_data):", display_list(response_data)))
+  
+    RSV_page_ID   <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
+    RSV_page      <- send_request(paste0('sid=', session_id, '&pid=', RSV_page_ID))
+    RSV_page_text <- httr::content(RSV_page, as = 'text')
 
-    RSV_actionbar_component_ID <-
-      extract_first_match("sys-actionbar-action.*\" onclick=\"sys.getC\\('([^']*)",
-                          RSV_page_text)
-
+    RSV_actionbar_component_ID <- extract_first_match("sys-actionbar-action.*\" onclick=\"sys.getC\\('([^']*)", RSV_page_text)
     response_data <- go_to_page(session_id, WID, RSV_page_ID, RSV_actionbar_component_ID, 'page_rsv.RSVBrowsePage')
-    customSearch_page_ID <-
-      extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
+    log.debug(paste("login_go_to_page (response_data):", display_list(response_data)))
+  
+    customSearch_page_ID <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
   } else if (database=="EpiPox") {
     EpiPox_CID <- extract_first_match("sys.call\\('(.{5,20})','Go'", frontend_page_text)
 
@@ -147,11 +139,11 @@ login <- function(username, password, database="EpiCoV") {
 
     queue <- list(queue = list(goto_EpiPox_page_command))
 
-    data <-
-      formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
-
-    response <- send_request(data)
+    data          <- formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
+    response      <- send_request(data)
     response_data <- parseResponse(response)
+    log.debug(paste("login_gotoEpiPox (response_data):", display_list(response_data)))
+  
     # POX_page_ID <-
     #   extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
     # POX_page <- send_request(paste0('sid=', session_id, '&pid=', POX_page_ID))
@@ -161,17 +153,14 @@ login <- function(username, password, database="EpiCoV") {
     #   extract_first_match("sys-actionbar-action.*\" onclick=\"sys.getC\\('([^']*)",
     #                       POX_page_text)
     # response_data <- go_to_page(session_id, WID, POX_page_ID, POX_actionbar_component_ID, 'page_mpox.MPoxBrowsePage')
-    customSearch_page_ID <-
-      extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
+    customSearch_page_ID <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
   } else {
     # check for overlay
 
-    COVID_actionbar_component_ID <-
-      extract_first_match("sys-actionbar-action.*\" onclick=\"sys.getC\\('([^']*)",
-                          frontend_page_text)
+    COVID_actionbar_component_ID <- extract_first_match("sys-actionbar-action.*\" onclick=\"sys.getC\\('([^']*)", frontend_page_text)
     response_data <- go_to_page(session_id, WID, frontend_page_ID, COVID_actionbar_component_ID, 'page_corona2020.Corona2020BrowsePage')
-    customSearch_page_ID <-
-      extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
+    log.debug(paste("login_go_to_page (response_data):", display_list(response_data)))
+    customSearch_page_ID <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
   }
   customSearch_page_response <- send_request(paste0('sid=', session_id, '&pid=', customSearch_page_ID))
   customSearch_page_text = httr::content(customSearch_page_response, as = 'text')
@@ -272,11 +261,8 @@ login <- function(username, password, database="EpiCoV") {
 
   #load panel
   # REFACTOR
-  selection_page <-
-    send_request(paste0('sid=', session_id, '&pid=', selection_pid_wid$pid))
-
-  selection_page_text = httr::content(selection_page, as = 'text')
-
+  selection_page <- send_request(paste0('sid=', session_id, '&pid=', selection_pid_wid$pid))
+  selection_page_text <- httr::content(selection_page, as = 'text')
   selection_panel_cid <- extract_first_match("onselect=\"sys.getC\\('(.{5,20})')", selection_page_text)
   selection_ceid <- extract_first_match("getFI\\('(.{5,20})').onSelect", selection_page_text)
 

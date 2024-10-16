@@ -3,8 +3,22 @@
 
 GISAID_URL = "https://www.epicov.org/epi3/frontend"
 
-headers = c(accept = "application/json, text/javascript, */*; q=0.01",
-            "content-type" = "application/x-www-form-urlencoded; charset=UTF-8")
+headers = c(
+  "accept" = "application/json, text/javascript, */*; q=0.01",
+  "content-type" = "application/x-www-form-urlencoded; charset=UTF-8",
+  "referer" = "https://www.epicov.org/epi3/frontend",
+  "sec-ch-ua-mobile" = "?0",
+  "sec-ch-ua-platform" = "Windows"
+)
+
+display_list <- function(data){
+  paste(
+    unlist(
+      lapply(names(data), function(name){paste0(name, "=", data[[name]])})
+      ),
+    collapse=" "
+  )
+}
 
 timestamp <- function() {
   return(as.character(as.integer(Sys.time()) * 1000))
@@ -68,6 +82,10 @@ parseResponse <- function(res) {
     # make a better check
     stop("No data found.")
   }
+  if (isTRUE(grep('captcha', j$responses[[1]]$data) == 1)) {
+    # make a better check
+    stop("Captcha window encountered, access denied.")
+  }
   return(j)
 
 }
@@ -97,30 +115,31 @@ get_accession_ids <- function(credentials) {
       queue = command_queue,
       timestamp = timestamp()
     )
-  res <-
-    httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
-  j = httr::content(res, as = 'parsed')
+  response <- send_request(method="POST", data=data)
+  response_data <- parseResponse(response)
+  log.debug(sprintf("get_accession_ids_call_async (response_data): %s", display_list(response_data)))
 
   # {"callback_response": {"msg": null, "async_id": "_rfsc9v_2o8a"}, "__ready__": true}
   # wait for selection
   # extract check_async
-  check_async_id = j$callback_response$async_id
+  check_async_id = response_data$callback_response$async_id
   # while generateDownloadDone not ready
   is_ready = FALSE
   while (!is_ready) {
-    res <- httr::GET(paste0('https://www.epicov.org/epi3/check_async/', check_async_id, '?_=', timestamp()))
-    j <- parseResponse(res)
-    is_ready <- j$is_ready
-    if (!is_ready) {
-      Sys.sleep(1)
-    }
+    base_url= paste0("https://www.epicov.org/epi3/check_async/", check_async_id)
+    parameter_string <- paste0("_=", timestamp())
+    response <- send_request(method="GET", base_url=base_url, parameter_string=parameter_string)
+    response_data <- parseResponse(response)
+    is_ready <- response_data$is_ready
   }
-  log.debug(j)
+  log.debug(sprintf("get_accession_ids_check_async (response_data): %s", display_list(response_data)))
 
   # select button
   selection_pid_wid <- get_selection_panel(credentials$sid, credentials$wid, credentials$pid, credentials$query_cid)
-  selection_page <-
-    send_request(paste0('sid=', credentials$sid, '&pid=', selection_pid_wid$pid))
+  parameter_string <- paste0('sid=', credentials$sid, '&pid=', selection_pid_wid$pid)
+  response <- send_request(method="GET", parameter_string=parameter_string)
+  response_data <- parseResponse(response)
+  log.debug(sprintf("get_accession_ids_selection_panel (response_data): %s", display_list(response_data)))
 
   # csv button
   #{"queue":[{"wid":"wid_rfsc9v_2p1c","pid":"pid_rfsc9v_2p1d","cid":"c_rfsc9v_15u","cmd":"Download","params":{},"equiv":null}]}
@@ -143,13 +162,15 @@ get_accession_ids <- function(credentials) {
       queue = command_queue,
       timestamp = timestamp()
     )
-  res <-
-    httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
-  j = httr::content(res, as = 'parsed')
-  url <- extract_first_match("sys.downloadFile\\(\"(.*)\",", j$responses[[1]]$data)
-  log.debug(paste0('https://www.epicov.org/', url))
+  response <- send_request(method="POST", data=data)
+  response_data <- parseResponse(response)
+  log.debug(sprintf("get_accession_ids_download (response_data): %s", display_list(response_data)))
+
+  url <- extract_first_match("sys.downloadFile\\(\"(.*)\",", response_data$responses[[1]]$data)
+  csv_url <- paste0('https://www.epicov.org/', url)
+  log.debug(sprintf("get_accession_ids_csv: %s", url))
   tryCatch(
-    df <- read.csv(paste0('https://www.epicov.org/', url), header=F, col.names = c('accession_id')),
+    df <- read.csv(csv_url, header=F, col.names = c('accession_id')),
     error = function(e) df <- data.frame(col.names = c('accession_id'))
   )
   # back
@@ -172,17 +193,16 @@ get_selection_panel <- function(session_id, WID, customSearch_page_ID, query_cid
   data <-
     formatDataForRequest(session_id, WID, customSearch_page_ID, queue, timestamp())
 
-  response <-
-    send_request(method='POST', data=data)
-
+  response <- send_request(method='POST', data=data)
   response_data <- parseResponse(response)
+  log.debug(sprintf("get_selection_panel (response_data): %s", display_list(response_data)))
+
   # extract PID
   # selection changes every time
   selection_pid <-
     strsplit(response_data$responses[[1]]$data, "'")[[1]][4]
   selection_wid <-
     strsplit(response_data$responses[[1]]$data, "'")[[1]][2]
-  log.debug(sprintf("get_selection_panel (response_data): %s", response_data))
   list(pid=selection_pid, wid=selection_wid)
 }
 
@@ -195,16 +215,15 @@ get_download_panel <- function(session_id, WID, customSearch_page_ID, query_cid)
     cmd = 'DownloadAllSequences',
     params = setNames(list(), character(0)) #hack for empty {}
   )
+  log.debug(sprintf("selection_command: %s", display_list(selection_command)))
   queue <- list(queue = list(selection_command))
 
-  data <-
-    formatDataForRequest(session_id, WID, customSearch_page_ID, queue, timestamp())
-
-  response <-
-    send_request(method='POST', data=data)
+  data <- formatDataForRequest(session_id, WID, customSearch_page_ID, queue, timestamp())
+  log.debug(sprintf("get_download_panel (data): %s", display_list(data)))
+  response <- send_request(method='POST', data=data)
 
   response_data <- parseResponse(response)
-  log.debug(sprintf("get_download_panel_pid_wid (response_data): %s", response_data))
+  log.debug(sprintf("get_download_panel_pid_wid (response_data): %s", display_list(response_data)))
   # extract PID
   # selection changes every time
   download_pid <-
@@ -227,13 +246,11 @@ send_back_cmd <- function(session_id, WID, PID, CID ) {
   )
   queue <- list(queue = list(selection_command))
 
-  data <-
-    formatDataForRequest(session_id, WID, PID, queue, timestamp())
+  data <- formatDataForRequest(session_id, WID, PID, queue, timestamp())
 
-  response <-
-    send_request(method='POST', data=data)
-
+  response <- send_request(method='POST', data=data)
   response_data <- parseResponse(response)
+  log.debug(sprintf("send_back_cmd (response_data): %s", display_list(response_data)))
 }
 
 select_entries <- function(credentials, list_of_accession_ids) {
@@ -271,10 +288,9 @@ select_entries <- function(credentials, list_of_accession_ids) {
   )
   json_queue <- list(queue = list(ev1, ev2, ev3))
   data <- formatDataForRequest(credentials$sid, selection_pid_wid$wid, selection_pid_wid$pid, json_queue, timestamp())
-  response <-
-    send_request(method='POST', data=data)
-  response_data <-parseResponse(response)
-  log.debug(response_data)
+  response <- send_request(method='POST', data=data)
+  response_data <- parseResponse(response)
+  log.debug(sprintf("select_entries (response_data): %s", display_list(response_data)))
   if (isTRUE(grep('Back', response_data$responses[[2]]$data) == 1)) {
     send_back_cmd(credentials$sid, selection_pid_wid$wid, selection_pid_wid$pid, credentials$selection_panel_cid)
   }
@@ -300,8 +316,7 @@ resetQuery <- function(credentials) {
       queue = command_queue,
       timestamp = timestamp()
     )
-  res <-
-    httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
+  response <- send_request(method="POST", data=data)
 }
 
 extract_search_ceid <- function(identifier, t) {
@@ -328,7 +343,7 @@ extract_search_ceid <- function(identifier, t) {
 
 log.debug <- function(msg) {
   if (Sys.getenv("GISAIDR_DEBUG") == 1) {
-    message(msg)
+    message(paste0(Sys.time(), "\tDEBUG: ", gsub("\n", " ", msg)))
   }
   invisible()
 }
@@ -361,12 +376,29 @@ log.info <- function(msg, level=1) {
 send_request <-
   function(parameter_string = "",
            data = NULL,
-           method = 'GET') {
-    URL <- paste0(GISAIDR::GISAID_URL, '?', parameter_string)
+           method = 'GET',
+           sleep_min = 5,
+           sleep_max = 10,
+           base_url = GISAIDR::GISAID_URL
+           ) {
+    # Set sleep timer
+    sleep_min_env <- Sys.getenv("GISAIDR_SLEEP_MIN")
+    if (sleep_min_env != "" && sleep_min_env > 0){
+      sleep_min <- as.numeric(sleep_min_env)
+    }
+    sleep_max_env <- Sys.getenv("GISAIDR_SLEEP_MAX")
+    if (sleep_max_env != "" && sleep_max_env > 0){
+      sleep_max <- as.numeric(sleep_max_env)
+    }
+
+    URL <- paste0(base_url, '?', parameter_string)
     if (is.null(data)) {
       data <- ""
     }
-    log.debug(sprintf("Sending request:\n Method -> %s\n URL -> %s\n data -> %s", method, URL, data))
+    log.debug(sprintf("Sending request: Method->%s, URL->%s, data->%s, headers->%s", method, URL, data, display_list(headers)))
+    random_sleep <- sleep_min + (sleep_max - sleep_min) * runif(1)
+    log.debug(sprintf("Sleep for %s seconds.", random_sleep))
+    Sys.sleep(random_sleep)
     if (method == 'GET') {
       response <- httr::GET(URL)
     } else if (method == 'POST') {

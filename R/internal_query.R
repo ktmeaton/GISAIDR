@@ -180,9 +180,9 @@ internal_query <-
             queue = command_queue,
             timestamp = timestamp()
           )
-        response <- httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
+        response <- send_request(method="POST", data=data)
         response_data <- parseResponse(response)
-        log.debug(response_data)
+        log.debug(paste("internal_query_filter (response_data):", display_list(response_data)))
       }
 
       queue = list()
@@ -235,8 +235,10 @@ internal_query <-
           queue = command_queue,
           timestamp = timestamp()
         )
-      response <- httr::GET(paste0(GISAID_URL, '?', data))
+      response <- send_request(method="GET", data=data)
       response_data <- parseResponse(response)
+      log.debug(paste("internal_query_get_data (response_data):", display_list(response_data)))
+      quit()
 
       if (total) {
         return(as.numeric(response_data$totalRecords))
