@@ -53,6 +53,12 @@ internal_query <-
     ) {
 
     df <- tryCatch({
+
+      # -----------------------------------------------------------------------
+      # Apply Filters
+
+      log.info("Applying search filters.", level=2)
+
       queue = list()
 
       # Simple Text Filter (EpiCoV only)
@@ -185,10 +191,13 @@ internal_query <-
         log.debug(paste("internal_query_filter (response_data):", display_list(response_data)))
       }
 
+      # -----------------------------------------------------------------------
+      # Ordering
+
       queue = list()
 
-      # ordering
       if (!is.null(order_by)) {
+        log.info("Ordering records.", level=2)        
         if (credentials$database == 'EpiCoV') {
           order_by = covid_order_by_col_map[[order_by]]
         } else {
@@ -205,6 +214,7 @@ internal_query <-
         queue <- append(queue, list(command))
       }
 
+      log.info(sprintf("Setting pagination: start=%s, rows_per_page=%s", start_index, nrows), level=2)
       # pagination
       command <- createCommand(
         wid = credentials$wid,
@@ -227,7 +237,7 @@ internal_query <-
 
       command_queue <- list(queue = queue)
 
-      data <-
+      parameter_string <-
         formatDataForRequest(
           sid = credentials$sid,
           wid = credentials$wid,
@@ -235,10 +245,13 @@ internal_query <-
           queue = command_queue,
           timestamp = timestamp()
         )
-      response <- send_request(method="GET", data=data)
+
+      log.info("Requesting records.", level=2)
+      log.debug("Sending request: internal_query get_data")
+      response <- send_request(method="GET", parameter_string=parameter_string)
       response_data <- parseResponse(response)
-      log.debug(paste("internal_query_get_data (response_data):", display_list(response_data)))
-      quit()
+      # Response data can be extermely long, just display first N characters
+      log.debug(paste("Received response: internal_query get_data:", substr(display_list(response_data), 1, 1000), "..."))
 
       if (total) {
         return(as.numeric(response_data$totalRecords))

@@ -61,30 +61,30 @@ formatDataForRequest <-
     return(data)
   }
 
-parseResponse <- function(res) {
-  j = httr::content(res, as = 'parsed')
+parseResponse <- function(response) {
+  j = httr::content(response, as = 'parsed')
   if (length(j$responses) == 0 & length(j) == 2) {
-    warning("There was an error please see: https://github.com/Wytamma/GISAIDR/issues/1")
-    stop("Error! Please login again.")
+    log.warn(paste("The response data has unexpected content:", display_list(j)))
+    stop(log.error("Unhandled response Error."))
   }
   if (isTRUE(grep('Error', j$responses[[1]]$data) == 1)) {
-    warning(utils::URLdecode(strsplit(j$responses[[1]]$data, '"')[[1]][2]))
-    stop("Internal server Error.")
+    log.warn(utils::URLdecode(strsplit(j$responses[[1]]$data, '"')[[1]][2]))
+    stop(log.error("Internal server Error."))
   }
   if (isTRUE(grep('expired', j$responses[[1]]$data) == 1)) {
-    stop("The session has expired. Please login again.")
+    stop(log.error("The session has expired. Please login again."))
   }
   if (isTRUE(grep('password', j$responses[[1]]$data) == 1)) {
     # make a better check
-    stop("Username or password wrong!")
+    stop(log.error("Username or password wrong!"))
   }
   if (isTRUE(grep('No data.', j$responses[[1]]$data) == 1)) {
     # make a better check
-    stop("No data found.")
+    stop(log.error("No data found."))
   }
   if (isTRUE(grep('captcha', j$responses[[1]]$data) == 1)) {
     # make a better check
-    stop("Captcha window encountered, access denied.")
+    stop(log.error("Captcha window encountered, access denied."))
   }
   return(j)
 
@@ -115,9 +115,16 @@ get_accession_ids <- function(credentials) {
       queue = command_queue,
       timestamp = timestamp()
     )
-  response <- send_request(method="POST", data=data)
-  response_data <- parseResponse(response)
-  log.debug(sprintf("get_accession_ids_call_async (response_data): %s", display_list(response_data)))
+  log.debug("Sending request: get_accession_ids call_async")
+  response      <- send_request(method="POST", data=data)
+  response_data <- httr::content(response, as = 'parsed')
+  display_response <- display_list(response_data)
+
+  # Truncate long responses
+  if (length(display_response) > 1000){
+    display_response <- paste(substr(display_list(response_data), 1, 1000), "...")
+  }
+  log.debug(sprintf("Received response: get_accession_ids call_async: %s", display_response))
 
   # {"callback_response": {"msg": null, "async_id": "_rfsc9v_2o8a"}, "__ready__": true}
   # wait for selection
@@ -128,18 +135,19 @@ get_accession_ids <- function(credentials) {
   while (!is_ready) {
     base_url= paste0("https://www.epicov.org/epi3/check_async/", check_async_id)
     parameter_string <- paste0("_=", timestamp())
+    log.debug("Sending request: get_accession_ids check_async")
     response <- send_request(method="GET", base_url=base_url, parameter_string=parameter_string)
     response_data <- parseResponse(response)
+    log.debug(sprintf("Received response: get_accession_ids check_async: %s", display_list(response_data)))
     is_ready <- response_data$is_ready
   }
-  log.debug(sprintf("get_accession_ids_check_async (response_data): %s", display_list(response_data)))
 
   # select button
   selection_pid_wid <- get_selection_panel(credentials$sid, credentials$wid, credentials$pid, credentials$query_cid)
-  parameter_string <- paste0('sid=', credentials$sid, '&pid=', selection_pid_wid$pid)
-  response <- send_request(method="GET", parameter_string=parameter_string)
-  response_data <- parseResponse(response)
-  log.debug(sprintf("get_accession_ids_selection_panel (response_data): %s", display_list(response_data)))
+  parameter_string  <- paste0('sid=', credentials$sid, '&pid=', selection_pid_wid$pid)
+  log.debug("Sending request: get_accession_ids selection_page")
+  selection_page    <- send_request(method="GET", parameter_string=parameter_string)
+  log.debug("Received response: get_accession_ids selection_page")
 
   # csv button
   #{"queue":[{"wid":"wid_rfsc9v_2p1c","pid":"pid_rfsc9v_2p1d","cid":"c_rfsc9v_15u","cmd":"Download","params":{},"equiv":null}]}
@@ -162,15 +170,18 @@ get_accession_ids <- function(credentials) {
       queue = command_queue,
       timestamp = timestamp()
     )
-  response <- send_request(method="POST", data=data)
-  response_data <- parseResponse(response)
-  log.debug(sprintf("get_accession_ids_download (response_data): %s", display_list(response_data)))
+
+  log.debug("Sending request: get_accession_ids download")
+  response      <- send_request(method="POST", data=data)
+  response_data <- httr::content(response, as = 'parsed')
+  log.debug(sprintf("Received response: get_accession_ids download: %s", display_list(response_data)))
 
   url <- extract_first_match("sys.downloadFile\\(\"(.*)\",", response_data$responses[[1]]$data)
   csv_url <- paste0('https://www.epicov.org/', url)
-  log.debug(sprintf("get_accession_ids_csv: %s", url))
-  tryCatch(
-    df <- read.csv(csv_url, header=F, col.names = c('accession_id')),
+  log.debug(sprintf("get_accession_ids csv: %s", url))
+  tryCatch({
+    df <- read.csv(csv_url, header=F, col.names = c('accession_id'))
+    },
     error = function(e) df <- data.frame(col.names = c('accession_id'))
   )
   # back
@@ -190,12 +201,12 @@ get_selection_panel <- function(session_id, WID, customSearch_page_ID, query_cid
   )
   queue <- list(queue = list(selection_command))
 
-  data <-
-    formatDataForRequest(session_id, WID, customSearch_page_ID, queue, timestamp())
+  data <- formatDataForRequest(session_id, WID, customSearch_page_ID, queue, timestamp())
 
+  log.debug(sprintf("Sending request: get_selection_panel"))
   response <- send_request(method='POST', data=data)
   response_data <- parseResponse(response)
-  log.debug(sprintf("get_selection_panel (response_data): %s", display_list(response_data)))
+  log.debug(sprintf("Received response: get_selection_panel: %s", display_list(response_data)))
 
   # extract PID
   # selection changes every time
@@ -287,10 +298,11 @@ select_entries <- function(credentials, list_of_accession_ids) {
     params = setNames(list(), character(0)) #hack for empty {}
   )
   json_queue <- list(queue = list(ev1, ev2, ev3))
-  data <- formatDataForRequest(credentials$sid, selection_pid_wid$wid, selection_pid_wid$pid, json_queue, timestamp())
-  response <- send_request(method='POST', data=data)
+  data       <- formatDataForRequest(credentials$sid, selection_pid_wid$wid, selection_pid_wid$pid, json_queue, timestamp())
+  log.debug("Sending request: select_entries") 
+  response      <- send_request(method='POST', data=data)
   response_data <- parseResponse(response)
-  log.debug(sprintf("select_entries (response_data): %s", display_list(response_data)))
+  log.debug(sprintf("Received response: select_entries: %s", display_list(response_data)))  
   if (isTRUE(grep('Back', response_data$responses[[2]]$data) == 1)) {
     send_back_cmd(credentials$sid, selection_pid_wid$wid, selection_pid_wid$pid, credentials$selection_panel_cid)
   }
@@ -333,7 +345,7 @@ extract_search_ceid <- function(identifier, t) {
   tryCatch(
     ceid <- ceid[[1]][length(ceid[[1]]) - 4],
     error = function(e) {
-      warning(paste0("Could not extract ", regex, " from ", substr(t, 0, 30)))
+      log.warn(paste0("Could not extract ", regex, " from ", substr(t, 0, 30)))
       e
     }
   )
@@ -395,7 +407,7 @@ send_request <-
     if (is.null(data)) {
       data <- ""
     }
-    log.debug(sprintf("Sending request: Method->%s, URL->%s, data->%s, headers->%s", method, URL, data, display_list(headers)))
+    log.debug(sprintf("Method->%s, URL->%s, data->%s, headers->%s", method, URL, data, display_list(headers)))
     random_sleep <- sleep_min + (sleep_max - sleep_min) * runif(1)
     log.debug(sprintf("Sleep for %s seconds.", random_sleep))
     Sys.sleep(random_sleep)
@@ -405,11 +417,11 @@ send_request <-
       response <-
         httr::POST(URL, httr::add_headers(.headers = GISAIDR::headers), body = data)
     } else {
-      stop(sprintf("Method '%s' not allowed", method))
+      stop(log.error(sprintf("Method '%s' not allowed", method)))
     }
     if (response$status_code >= 500) {
-      warning(sprintf("An error occurred while trying to %s %s", method, URL))
-      stop("Server error!")
+      log.warn(sprintf("An error occurred while trying to %s %s", method, URL))
+      stop(log.error("Server error!"))
     }
     response
   }
@@ -554,6 +566,12 @@ setDataTypes <- function(df) {
   return(df)
 }
 
+getWebRows <- function(database) {
+  # TBD check this!
+  if (database == 'EpiFlu') { return(27) }
+  else { return(50) }
+}
+
 create_search_queue <- function(credentials, ceid, cvalue, cmd) {
   queue = list()
   command <- createCommand(
@@ -588,4 +606,30 @@ create_search_queue <- function(credentials, ceid, cvalue, cmd) {
   queue <- append(queue, list(command))
 
   return(queue)
+}
+
+readFasta <- function(file_path){
+  sample <- NULL
+  sequence <- NULL
+  records <- list()
+  for (line in readLines(file_path)){
+    # Skip empty lines
+    if (line == ""){ next }
+    if ( startsWith(line, ">") ){
+      # first record
+      if (is.null(sample)){ 
+        sample <- gsub(">", "", line)
+      } else {
+        records[sample] <- sequence
+        sample <- gsub(">", "", line)
+        sequence <- NULL
+      }
+    } else {
+      sequence <- paste0(sequence, line)
+    }
+  }
+  # Add the final record
+  records[sample] <- sequence
+
+  return(records)
 }

@@ -19,24 +19,26 @@ args_output = parser$add_argument_group('OUTPUT OPTIONS')
 args_output$add_argument('--augur-input',           action="store_true", help='Augur input metadata and sequences.')
 args_output$add_argument('--dates-and-location',    action="store_true", help='Dates and location metadata.')
 args_output$add_argument('--ids',                   action="store_true", help='Accession IDs.')
+args_output$add_argument('--ndjson',                action="store_true", help='Newline-delimited JSON.')
 args_output$add_argument('--order-by',              type="character",    help="Order the final metadata by this column. Note: sequences will not follow this order.")
 args_output$add_argument('--order-by-rev',          action="store_true", help="Reverse the order of the final metadata.")
 args_output$add_argument('--patient-status',        action="store_true", help='Patient status metadata.')
 args_output$add_argument('--prefix',                type="character",    default=NULL, help="Optional prefix for output files. If not provided, ids will be save to 'ids.txt', metadata to 'metadata.tsv', and sequences to 'sequences.fasta'.")
 args_output$add_argument('--sequences',             action="store_true", help='Nucleotide sequences fasta.')
 args_output$add_argument('--sequencing-technology', action="store_true", help='Sequencing technology metadata.')
+args_output$add_argument('--web',                   action="store_true", help='Metadata as displayed in the web portal table.')
 
 # Download Options
 DEFAULT_BATCH <- 1000
 DEFAULT_RETRIES <- 2
-DEFAULT_SLEEP_MIN <- 5
-DEFAULT_SLEEP_MAX <- 10
+DEFAULT_SLEEP_MIN <- 5.0
+DEFAULT_SLEEP_MAX <- 10.0
 args_download = parser$add_argument_group('DOWNLOAD OPTIONS')
 args_download$add_argument('--batch', type='integer', default=DEFAULT_BATCH, help=paste("Batch size when downloading sequences and metadata. (default:", DEFAULT_BATCH, ")"))
 args_download$add_argument('--max-records', type='integer', help="Limit the number of records to the first N in the query. (default: no limit)")
 args_download$add_argument('--retries', type='integer', default=DEFAULT_RETRIES, help=paste("If an error is encountered, retry this number of times before exiting. (default:", DEFAULT_RETRIES, ")"))
-args_download$add_argument('--sleep-min', type='integer', default=DEFAULT_SLEEP_MIN, help=paste("Minimum number of seconds to sleep in between HTTP requests. (default:", DEFAULT_SLEEP_MIN, ")"))
-args_download$add_argument('--sleep-max', type='integer', default=DEFAULT_SLEEP_MAX, help=paste("Maximum number of seconds to sleep in between HTTP requests.(default:", DEFAULT_SLEEP_MAX, ")"))
+args_download$add_argument('--sleep-min', type='numeric', default=DEFAULT_SLEEP_MIN, help=paste("Minimum number of seconds to sleep in between HTTP requests. (default:", DEFAULT_SLEEP_MIN, ")"))
+args_download$add_argument('--sleep-max', type='numeric', default=DEFAULT_SLEEP_MAX, help=paste("Maximum number of seconds to sleep in between HTTP requests.(default:", DEFAULT_SLEEP_MAX, ")"))
 
 # Search Options
 args_search = parser$add_argument_group('SEARCH OPTIONS')
@@ -182,8 +184,8 @@ if (opt$augur_input && opt$database != "EpiCoV"){
 }
 
 # No output chosen
-if (!opt$augur_input && !opt$dates_and_location &&!opt$ids && !opt$patient_status && !opt$sequencing_technology && !opt$sequences){
-    GISAIDR::log.error(paste("At least one output must be selected from ids, metadata, and sequences. Please see OUTPUT OPTIONS with --help."))
+if (!opt$augur_input && !opt$dates_and_location &&!opt$ids && !opt$patient_status && !opt$sequencing_technology && !opt$sequences&& !opt$web){
+    GISAIDR::log.error(paste("At least one output must be selected from ids, metadata, sequences, and web. Please see OUTPUT OPTIONS with --help."))
     quit(status=1)
 }
 
@@ -206,10 +208,12 @@ if (!is.null(opt$prefix)){
     ids_file_path       <- paste0(opt$prefix, ".ids.txt")
     metadata_file_path  <- paste0(opt$prefix, ".metadata.tsv")
     sequences_file_path <- paste0(opt$prefix, ".sequences.fasta")
+    ndjson_file_path    <- paste0(opt$prefix, ".records.ndjson")
 } else {
     ids_file_path       <- "ids.txt"
     metadata_file_path  <- "metadata.tsv"
     sequences_file_path <- "sequences.fasta"
+    ndjson_file_path    <- "records.ndjson"
 }
 
 # Clean up existing output files, so we can continously write to them as we batch download
@@ -218,6 +222,15 @@ if (opt$augur_input || opt$dates_and_location || opt$patient_status || opt$seque
         GISAIDR::log.info(paste("Removing existing metadata file:", metadata_file_path))
         invisible(file.remove(metadata_file_path))
     }
+}
+if (opt$ndjson){
+    if (file.exists(ndjson_file_path)) {
+        GISAIDR::log.info(paste("Removing existing ndjson file:", ndjson_file_path))
+        invisible(file.remove(ndjson_file_path))
+    }
+    # We're going to manually write to the ndjson as we process batches
+    # To be determined if this is more/less efficient than other line writing methods    
+    ndjson_file <- file(ndjson_file_path, open = "a")
 }
 if (opt$augur_input || opt$sequences) {
     if (file.exists(sequences_file_path)) { 
@@ -300,6 +313,7 @@ if (!is.null(opt$accessions)){
     query_args$fast <- TRUE
     query_args$credentials <- credentials
     if (!is.null(opt$aa_substitution))          { query_args$aa_substitution <- opt$aa_substitution}
+    if (!is.null(opt$batch))                    { query_args$nrows <- opt$batch }
     if (!is.null(opt$collection_date_complete)) { query_args$collection_date_complete <- opt$collection_date_complete}    
     if (!is.null(opt$complete))                 { query_args$complete <- opt$complete}
     if (!is.null(opt$from))                     { query_args$from       <- opt$from}
@@ -374,6 +388,7 @@ for(start in seq(1, length(accession_ids), opt$batch)){
             download_args$list_of_accession_ids <- batch_accession_ids
 
             download_types <- c()
+            if (opt$web)                  { download_types <- c(download_types, "web")}
             if (opt$dates_and_location)   { download_types <- c(download_types, "dates_and_location") }
             if (opt$patient_status)       { download_types <- c(download_types, "patient_status") }
             if (opt$sequencing_technology){ download_types <- c(download_types, "sequencing_technology") }
@@ -408,7 +423,8 @@ for(start in seq(1, length(accession_ids), opt$batch)){
             # Write merged metadata
             if (!is.null(metadata)){
                 # Put newest submissions first if possible
-                if ("gisaid_epi_isl" %in% colnames(metadata)){ order_by <- "gisaid_epi_isl" } 
+                if ("gisaid_epi_isl" %in% colnames(metadata))    { order_by <- "gisaid_epi_isl" }
+                else if ("accession_id" %in% colnames(metadata)) { order_by <- "accession_id" }
                 else { order_by <- "Accession ID"}
                 metadata <- metadata[order(metadata[[order_by]], decreasing=TRUE), ]
                 # Append to output file
@@ -432,7 +448,7 @@ for(start in seq(1, length(accession_ids), opt$batch)){
             }
             if (!is.null(sequences)){
                 cat(sequences, file=sequences_file, append=TRUE)
-            }            
+            }        
 
             # Break out of the while loop of download retries, continue on to next batch
             break

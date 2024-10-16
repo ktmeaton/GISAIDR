@@ -74,9 +74,8 @@ download <- function(credentials, list_of_accession_ids, get_sequence=TRUE, clea
     )
     json_queue <- list(queue = list(ev))
     data <- formatDataForRequest(credentials$sid, download_pid_wid$wid, download_pid_wid$pid, json_queue, timestamp())
-    res <-
-      httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
-    j <- parseResponse(res) #
+    res <- send_request(method="POST", data=data)
+    j <- parseResponse(res)
 
     download_pid_wid$wid <- extract_first_match("sys.openOverlay\\('(.{5,20})',", j$responses[[3]]$data)
 
@@ -130,8 +129,7 @@ download <- function(credentials, list_of_accession_ids, get_sequence=TRUE, clea
   json_queue <- list(queue = list(ev))
   data <- formatDataForRequest(credentials$sid, download_pid_wid$wid, download_pid_wid$pid, json_queue, timestamp())
   message('Compressing data. Please wait...')
-  res <-
-    httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
+  res <- send_request(method="POST", data=data)
   j <- parseResponse(res)
   # extract check_async
   check_async_id = strsplit(j$responses[[1]]$data, "'")[[1]][4]
@@ -252,21 +250,23 @@ download <- function(credentials, list_of_accession_ids, get_sequence=TRUE, clea
 download_files <- function(
   credentials,
   list_of_accession_ids,
-  dates_and_location    = NULL,
-  patient_status        = NULL,
-  sequencing_technology = NULL,
-  sequences             = NULL,
-  augur_input           = NULL,
+  dates_and_location    = FALSE,
+  patient_status        = FALSE,
+  sequencing_technology = FALSE,
+  sequences             = FALSE,
+  augur_input           = FALSE,
+  web                   = FALSE,
   clean_up              = TRUE
   ) {
 
   # Store the possible download type results
   download_results <- list(
-    dates_and_location    = dates_and_location,
-    patient_status        = patient_status,
-    sequencing_technology = sequencing_technology,
-    augur_input           = augur_input,
-    sequences             = sequences
+    web                   = if (web) TRUE else NULL,
+    dates_and_location    = if (dates_and_location) TRUE else NULL,
+    patient_status        = if (patient_status) TRUE else NULL,
+    sequencing_technology = if (sequencing_technology) TRUE else NULL,
+    augur_input           = if (augur_input) TRUE else NULL,
+    sequences             = if (sequences) TRUE else NULL
   )
 
   # ---------------------------------------------------------------------------
@@ -297,6 +297,65 @@ download_files <- function(
     
     log.info(paste("Download type:", download_type), level=2)
 
+    # ---------------------------------------------------------------------------
+    # Web Format Download
+
+    if (download_type == "web"){
+      df <- list()
+      nrows <- getWebRows(credentials$database)
+      for (start_index in seq(1, length(accession_ids), nrows)){
+        queue = list()
+        log.info(sprintf("Downloading web records %s - %s.", start_index, start_index + nrows), level=2)
+        # pagination
+        command <- createCommand(
+          wid = credentials$wid,
+          pid = credentials$pid,
+          cid = credentials$query_cid,
+          cmd = 'SetPaginating',
+          params = list(start_index = start_index, rows_per_page = nrows)
+        )
+        queue <- append(queue, list(command))
+
+        # get data
+        command <- createCommand(
+          wid = credentials$wid,
+          pid = credentials$pid,
+          cid = credentials$query_cid,
+          cmd = 'GetData'
+        )
+        queue <- append(queue, list(command))
+        command_queue <- list(queue = queue)
+
+        # send requests
+        parameter_string <-
+          formatDataForRequest(
+            sid = credentials$sid,
+            wid = credentials$wid,
+            pid = credentials$pid,
+            queue = command_queue,
+            timestamp = timestamp()
+          )
+
+        log.info("Requesting records.", level=2)
+        log.debug("Sending request: internal_query get_data")
+        response <- send_request(method="GET", parameter_string=parameter_string)
+        response_data <- parseResponse(response)
+        # Response data can be extermely long, just display first N characters
+        log.debug(paste("Received response: internal_query get_data:", substr(display_list(response_data), 1, 1000), "..."))
+
+        for (record in response_data$records){
+          df <- rbind(df, as.data.frame(record))
+        }
+      }
+      if (length(df != 0)){
+        df <- setColumnNames(df, credentials$database)
+        download_results$web <- setDataTypes(df)
+      } else {
+        download_results$web <- NULL
+      }
+      next
+    }
+  
     # ---------------------------------------------------------------------------
     # Open Download Panel
 
@@ -395,7 +454,7 @@ download_files <- function(
       )
       json_queue    <- list(queue = list(ev))
       data          <- formatDataForRequest(credentials$sid, download_pid_wid$wid, download_pid_wid$pid, json_queue, timestamp())
-      response      <- httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
+      response      <- send_request(method="POST", data=data)
       response_data <- parseResponse(response)
 
       download_pid_wid$wid <- extract_first_match("sys.openOverlay\\('(.{5,20})',", response_data$responses[[3]]$data)
@@ -453,7 +512,7 @@ download_files <- function(
     data       <- formatDataForRequest(credentials$sid, download_pid_wid$wid, download_pid_wid$pid, json_queue, timestamp())
 
     log.info("Compressing data.", level=2)
-    response <- httr::POST(GISAID_URL, httr::add_headers(.headers = headers), body = data)
+    response <- send_request(method="POST", data=data)
     response_data   <- parseResponse(response)
 
     # extract check_async

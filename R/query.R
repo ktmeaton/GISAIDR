@@ -53,7 +53,7 @@ query <-
            fast = FALSE) {
 
     if (nrows > 50 && !total && !load_all && !fast) {
-      message(paste0("Loading entries in batches..."))
+      log.info("Loading entries in batches...")
       batches <- create_batches(start_index = start_index, nrows = nrows)
       results <- data.frame()
       for (i in 1:nrow(batches)) {
@@ -85,6 +85,7 @@ query <-
       rownames(results) <- NULL # reset index
       return(results)
     } else if (total | load_all | fast) {
+      log.info("Loading all entries...")
       return(
         internal_query(
           credentials = credentials,
@@ -112,6 +113,7 @@ query <-
         )
       )
     } else  {
+      log.info("Loading entries...")
       return(
         internal_query(
           credentials = credentials,

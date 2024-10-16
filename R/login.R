@@ -4,24 +4,32 @@
 #'
 #' @param username GISAID username.
 #' @param password GISAID password.
+#' @param database GISAID database name.
 #' @return credentials used to query GISAID.
 #' @examples
 #' username = Sys.getenv("GISAIDR_USERNAME")
 #' password = Sys.getenv("GISAIDR_PASSWORD")
-#' login(username, password)
+#' login(username, password, "EpiCoV")
 login <- function(username, password, database="EpiCoV") {
+
+  log.info("Connecting to GISAID.", level=2)
+
   if (!database %in% c("EpiCoV", "EpiRSV", "EpiPox")) {
     stop(log.error(paste("Database must be EpiCoV, EpiRSV or EpiPox:", database)))
   }
   # get a session ID
+  log.debug("Sending request: login get_session_id")
   response       <- send_request(method="GET")
   home_page_text <- httr::content(response, as = 'text')
+  log.debug("Response received: login get_session_id")
   session_id     <- extract_first_match("name=\"sid\" value='([^']*)", home_page_text)
 
   # Load the home page
   # TODO: ensure it's the covid-19 page
+  log.debug("Sending request: login load_homepage")
   response        <- send_request(method="GET", parameter_string=paste0('sid=', session_id))
   login_page_text <- httr::content(response, as = 'text')
+  log.debug("Response received: login load_homepage")
 
   # extract the other IDs for login stage 1
   WID                <- extract_first_match('"WID"] = "([^"]*)', login_page_text)
@@ -30,6 +38,7 @@ login <- function(username, password, database="EpiCoV") {
 
   # frontend page
   # create doLogin command
+  log.info("Logging in.", level=2)
   doLogin_command <- createCommand(
     wid = WID,
     pid = login_page_ID,
@@ -42,9 +51,10 @@ login <- function(username, password, database="EpiCoV") {
   # commands can be built up into a pipeline in the queue
   queue         <- list(queue = list(doLogin_command))
   data          <- formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
+  log.debug("Sending request: login doLogin")
   response      <- send_request(method = 'POST', data=data)
   response_data <- parseResponse(response)
-  log.debug(paste("login_doLogin (response_data):", display_list(response_data)))
+  log.debug(paste("Response received: login doLogin:", display_list(response_data)))
 
   if (length(grep("^sys.goPage", response_data$responses[[1]]$data)) == 0) {
     # handle event that the default page is not frontend
@@ -63,11 +73,13 @@ login <- function(username, password, database="EpiCoV") {
 
     queue         <- list(queue = list(goto_EpiCov_page_command))
     data          <- formatDataForRequest(session_id, WID, login_page_ID, queue, timestamp())
+    log.debug("Sending request: login corona2020")
     response      <- send_request(method="GET", data)
     response_data <- parseResponse(response)
-    log.debug(paste0("login_frontend (response_data):", display_list(response_data)))
+    log.debug(paste0("Response received login corona2020:", display_list(response_data)))
   }
 
+  log.info("Loading home page.", level=2)
   frontend_page_ID   <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
   frontend_page      <- send_request(paste0('sid=', session_id, '&pid=', frontend_page_ID))
   frontend_page_text <- httr::content(frontend_page, as = 'text')
@@ -79,8 +91,10 @@ login <- function(username, password, database="EpiCoV") {
 
     # load overlay
     parameter_string  <- paste0('sid=', session_id, '&pid=', overlay_page_ID)
+    log.debug("Sending request: login openOverlay")
     overlay_page      <- send_request(method="GET", parameter_string=parameter_string)
     overlay_page_text <- httr::content(overlay_page, as = 'text')
+    log.debug("Received response: login openOverlay")
 
     # extract close cid
     close_overlay_cid <- extract_first_match("createComponent\\('(.{5,20})','CloseButtonComponent", overlay_page_text)
@@ -162,6 +176,8 @@ login <- function(username, password, database="EpiCoV") {
     log.debug(paste("login_go_to_page (response_data):", display_list(response_data)))
     customSearch_page_ID <- extract_first_match("\\('(.*)')",response_data$responses[[1]]$data)
   }
+
+  log.info("Locating page components.", level=2)  
   customSearch_page_response <- send_request(paste0('sid=', session_id, '&pid=', customSearch_page_ID))
   customSearch_page_text = httr::content(customSearch_page_response, as = 'text')
 
@@ -257,6 +273,7 @@ login <- function(username, password, database="EpiCoV") {
   }
 
   # send selection command
+  log.info("Locating selection panel.", level=2) 
   selection_pid_wid <- get_selection_panel(session_id, WID, customSearch_page_ID, query_cid)
 
   #load panel
@@ -269,6 +286,7 @@ login <- function(username, password, database="EpiCoV") {
   send_back_cmd(session_id, selection_pid_wid$wid, selection_pid_wid$pid, selection_panel_cid)
 
   # back
+  log.info("Finalizing credentials.", level=2) 
   credentials <-
     list(
       database = database,
